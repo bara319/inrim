@@ -1730,13 +1730,52 @@ document.getElementById("photo-clear").addEventListener("click",()=>{
   document.getElementById("photo-label").textContent="📷 写真で背景を変える";
 });
 
-document.getElementById("save-image-btn").addEventListener("click",()=>{
+function safeFileName(name, ext){
+  const base=(name||"inrim").replace(/[\\/:*?"<>|#%&{}$!`'@+=]/g,"_").replace(/\s+/g,"_").slice(0,80);
+  return `${base || "inrim"}.${ext}`;
+}
+
+async function downloadBlob(blob, filename){
+  const file=new File([blob],filename,{type:blob.type||"application/octet-stream"});
+  if(navigator.canShare && navigator.canShare({files:[file]})){
+    try{
+      await navigator.share({files:[file],title:"韻リム"});
+      return;
+    }catch(e){
+      if(e.name==="AbortError")return;
+      console.warn("share failed, fallback download:", e);
+    }
+  }
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;
+  a.download=filename;
+  a.style.display="none";
+  document.body.appendChild(a);
+  a.click();
+  const isiOS=/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==="MacIntel" && navigator.maxTouchPoints>1);
+  if(isiOS){
+    setTimeout(()=>{
+      window.open(url,"_blank");
+      alert("保存画面が出ない場合は、開いた画像/動画を長押しして「写真に保存」または共有ボタンから保存してください。");
+    },250);
+  }
+  setTimeout(()=>{
+    a.remove();
+    URL.revokeObjectURL(url);
+  },isiOS?60000:5000);
+}
+
+document.getElementById("save-image-btn").addEventListener("click",async()=>{
   const canvas=document.getElementById("jacket-canvas");
   if(!canvas)return;
-  const a=document.createElement("a");
-  a.href=canvas.toDataURL("image/png");
-  a.download=`韻リム_${state.topic}_thumbnail.png`;
-  a.click();
+  canvas.toBlob(async blob=>{
+    if(!blob){
+      alert("画像の保存に失敗しました。もう一度ためしてみてください。");
+      return;
+    }
+    await downloadBlob(blob,safeFileName(`韻リム_${state.topic}_thumbnail`,"png"));
+  },"image/png");
 });
 
 
@@ -1824,11 +1863,16 @@ async function generateVideo() {
       } catch(e){ console.warn("audio mix failed:", e); }
     }
 
-    const mimeType = ["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm","video/mp4"]
+    const appleDevice=/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==="MacIntel" && navigator.maxTouchPoints>1);
+    const videoTypes = appleDevice
+      ? ["video/mp4","video/webm;codecs=h264","video/webm;codecs=vp8","video/webm"]
+      : ["video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm","video/mp4"];
+    const mimeType = videoTypes
       .find(t => MediaRecorder.isTypeSupported(t)) || "video/webm";
     const mr = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8000000 });
     const chunks = [];
     mr.ondataavailable = e => { if(e.data.size>0) chunks.push(e.data); };
+    const stopped = new Promise(resolve => { mr.onstop = resolve; });
 
     mr.start();
 
@@ -1978,19 +2022,15 @@ async function generateVideo() {
       loop();
     });
 
+    try{ mr.requestData?.(); }catch{}
     mr.stop();
-
-    await new Promise(resolve => { mr.onstop = resolve; });
+    await stopped;
 
     // ダウンロード
     const blob = new Blob(chunks, { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
     const ext = mimeType.includes("mp4") ? "mp4" : "webm";
-    a.download = `韻リム_${topic}_${bt.name}.${ext}`;
-    a.click();
-    setTimeout(()=>URL.revokeObjectURL(url), 5000);
+    if(!blob.size) throw new Error("動画データを作れませんでした");
+    await downloadBlob(blob,safeFileName(`韻リム_${topic}_${bt.name}`,ext));
 
   } catch(e) {
     console.error("video error:", e);
